@@ -18,6 +18,8 @@ class Connector(ABC):
     """
 
     type_name: ClassVar[str] = "base"
+    type_label: ClassVar[str] = "Connector"
+    type_description: ClassVar[str] = ""
 
     def __init__(self, name: str, description: str = "") -> None:
         self.name = name
@@ -34,6 +36,20 @@ class Connector(ABC):
     def health(self) -> dict[str, Any]:
         """Cheap liveness check used by the /api/health endpoint. Override when meaningful."""
         return {"ok": True}
+
+    @classmethod
+    def config_fields(cls) -> list[dict[str, Any]]:
+        """Describe the ``options`` this connector accepts so the web UI can render a form.
+
+        Each field: ``{"key", "label", "type": text|password|textarea|select|list|bool,
+        "required", "default", "help", "choices": [...], "show_if": {"key": value}}``.
+        ``list`` fields are entered one item per line and passed as a list.
+        """
+        return []
+
+    @classmethod
+    def secret_keys(cls) -> set[str]:
+        return {f["key"] for f in cls.config_fields() if f.get("type") == "password"}
 
     def login_provider(self) -> Any | None:
         """Return an object with start_login/status/sign_out when users must sign in themselves

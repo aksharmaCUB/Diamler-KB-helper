@@ -1,6 +1,6 @@
 import pytest
 
-from kb_helper.connectors import Connector, ConnectorError, build_connectors, register_connector_type, resolve_connector_type
+from kb_helper.connectors import Connector, ConnectorError, build_connectors, build_connectors_lenient, register_connector_type, resolve_connector_type
 from kb_helper.connectors.local_folder import LocalFolderConnector
 from kb_helper.models import Document, SearchHit
 
@@ -56,3 +56,18 @@ def test_build_connectors(kb_dir):
 def test_bad_entries(entries):
     with pytest.raises(ConnectorError):
         build_connectors(entries)
+
+
+def test_build_connectors_lenient_reports_per_entry(kb_dir):
+    connectors, errors = build_connectors_lenient(
+        [
+            {"name": "docs", "type": "local_folder", "options": {"path": str(kb_dir)}},
+            {"name": "broken", "type": "local_folder", "options": {"path": "/definitely/missing"}},
+            {"name": "weird", "type": "no_such_type"},
+            {"name": "off", "type": "no_such_type", "enabled": False},
+        ]
+    )
+    assert list(connectors) == ["docs"]
+    assert "not a directory" in errors["broken"]
+    assert "Unknown connector type" in errors["weird"]
+    assert "off" not in errors

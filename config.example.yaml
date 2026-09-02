@@ -1,7 +1,9 @@
-# Copy to config.yaml and adjust. Secrets can be pulled from the environment / .env
-# with ${VAR} or ${VAR:-default}.
+# You normally do not need this file: start the server and use Settings / Add connector in the
+# browser, which writes config.yaml for you. Copy this to config.yaml only if you prefer editing
+# by hand. Secrets can be pulled from the environment / .env with ${VAR} or ${VAR:-default}.
 
 assistant:
+  # api_key: sk-ant-...       # or set ANTHROPIC_API_KEY in the environment / .env (takes precedence)
   model: claude-opus-5        # any current Claude model id
   effort: high                # low | medium | high | xhigh | max  (cost/quality knob)
   max_tokens: 16000

@@ -47,7 +47,10 @@ def _authority(host: str, tenant: str) -> str:
 
 
 class AppAuth:
-    """Client-credentials flow (application permissions)."""
+    """Client-credentials flow (application permissions). The MSAL app is created lazily so that
+    configuring a connector never blocks on the network; problems surface on first use."""
+
+    ERROR_CACHE_SECONDS = 60.0
 
     def __init__(
         self,
@@ -60,22 +63,41 @@ class AppAuth:
         if not (tenant_id and client_id and client_secret):
             raise ConnectorError("client_credentials auth needs tenant_id, client_id and client_secret")
         self.scopes = scopes or GRAPH_APP_SCOPES
-        self._app = msal.ConfidentialClientApplication(
-            client_id, authority=_authority(authority_host, tenant_id), client_credential=client_secret
-        )
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.authority = _authority(authority_host, tenant_id)
+        self._app: msal.ConfidentialClientApplication | None = None
         self._lock = threading.Lock()
         self._token: str | None = None
         self._expires_at = 0.0
+        self._last_error: tuple[float, str] | None = None
+
+    def _application(self) -> msal.ConfidentialClientApplication:
+        if self._app is None:
+            try:
+                self._app = msal.ConfidentialClientApplication(
+                    self.client_id, authority=self.authority, client_credential=self.client_secret
+                )
+            except ValueError as exc:  # bad tenant / authority unreachable
+                raise ConnectorError(f"Microsoft sign-in configuration problem: {exc}") from exc
+        return self._app
 
     def token(self) -> str:
         with self._lock:
             if self._token and time.time() < self._expires_at - 60:
                 return self._token
-            result = self._app.acquire_token_for_client(scopes=self.scopes) or {}
-            if "access_token" not in result:
-                raise ConnectorError(
-                    f"Microsoft Graph authentication failed: {result.get('error')}: {result.get('error_description')}"
-                )
+            if self._last_error and time.time() - self._last_error[0] < self.ERROR_CACHE_SECONDS:
+                raise ConnectorError(self._last_error[1])
+            try:
+                result = self._application().acquire_token_for_client(scopes=self.scopes) or {}
+                if "access_token" not in result:
+                    raise ConnectorError(
+                        f"Microsoft Graph authentication failed: {result.get('error')}: {result.get('error_description')}"
+                    )
+            except ConnectorError as exc:
+                self._last_error = (time.time(), str(exc))
+                raise
+            self._last_error = None
             self._token = result["access_token"]
             self._expires_at = time.time() + float(result.get("expires_in", 3600))
             return self._token
@@ -84,6 +106,7 @@ class AppAuth:
         with self._lock:
             self._token = None
             self._expires_at = 0.0
+            self._last_error = None
 
     def status(self) -> dict[str, Any]:
         return {"mode": "client_credentials", "signed_in": True}
@@ -129,9 +152,13 @@ class UserLoginAuth:
                     except (ValueError, OSError):
                         pass
                 self._caches[user_key] = cache
-                self._apps[user_key] = msal.PublicClientApplication(
-                    self.client_id, authority=self.authority, token_cache=cache
-                )
+                try:
+                    self._apps[user_key] = msal.PublicClientApplication(
+                        self.client_id, authority=self.authority, token_cache=cache
+                    )
+                except ValueError as exc:  # bad tenant / authority unreachable
+                    self._caches.pop(user_key, None)
+                    raise ConnectorError(f"Microsoft sign-in configuration problem: {exc}") from exc
             return self._apps[user_key]
 
     def _persist(self, user_key: str) -> None:

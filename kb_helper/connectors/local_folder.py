@@ -20,6 +20,15 @@ def _tokens(text: str) -> list[str]:
 
 class LocalFolderConnector(Connector):
     type_name = "local_folder"
+    type_label = "Local folder"
+    type_description = "Documents in a folder on the machine running the helper (Markdown, Word, PDF, ...)."
+
+    @classmethod
+    def config_fields(cls) -> list[dict[str, Any]]:
+        return [
+            {"key": "path", "label": "Folder path", "type": "text", "required": True,
+             "help": "Absolute path, or relative to where the server runs. Example: ./sample_kb"},
+        ]
 
     def __init__(self, name: str, description: str = "", *, path: str, max_file_bytes: int = 20_000_000) -> None:
         super().__init__(name, description or f"Files under {path}")

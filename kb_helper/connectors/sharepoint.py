@@ -35,6 +35,26 @@ _INTERNAL_FIELD = re.compile(r"^(_|@odata|ContentType$|Attachments$|Edit$|LinkTi
 
 class SharePointConnector(Connector):
     type_name = "sharepoint"
+    type_label = "SharePoint Online"
+    type_description = "Documents, wiki pages and lists in Microsoft 365 SharePoint, via Microsoft Graph."
+
+    @classmethod
+    def config_fields(cls) -> list[dict[str, Any]]:
+        return [
+            {"key": "sites", "label": "Sites to search", "type": "list", "required": False,
+             "help": "One site URL per line, e.g. https://contoso.sharepoint.com/sites/IT. Leave empty to search everything you can see."},
+            {"key": "auth_mode", "label": "Sign-in method", "type": "select", "default": "user",
+             "choices": [{"value": "user", "label": "Sign in with my own account (no app registration)"},
+                         {"value": "client_credentials", "label": "App registration with client secret"}]},
+            {"key": "tenant_id", "label": "Tenant", "type": "text", "required": False,
+             "help": "Optional for personal sign-in (e.g. contoso.onmicrosoft.com). Required for an app registration.",
+             "show_if": {"auth_mode": "user"}},
+            {"key": "tenant_id", "label": "Tenant id", "type": "text", "required": True, "show_if": {"auth_mode": "client_credentials"}},
+            {"key": "client_id", "label": "Client id", "type": "text", "required": True, "show_if": {"auth_mode": "client_credentials"}},
+            {"key": "client_secret", "label": "Client secret", "type": "password", "required": True, "show_if": {"auth_mode": "client_credentials"}},
+            {"key": "search_region", "label": "Search region", "type": "text", "required": False, "default": "EMEA",
+             "help": "Required by Microsoft for app-only search: NAM, EMEA or APC.", "show_if": {"auth_mode": "client_credentials"}},
+        ]
 
     def __init__(
         self,

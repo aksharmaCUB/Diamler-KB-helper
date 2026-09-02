@@ -43,33 +43,38 @@ Browser / CLI ──► FastAPI (kb_helper/server.py) ──► Assistant (kb_he
 ## Quick start
 
 ```bash
-git clone <this repo> && cd Diamler-KB-helper
-python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+git clone -b claude/sharepoint-chatbot-helper-23hds2 https://github.com/aksharmaCUB/Diamler-KB-helper.git
+cd Diamler-KB-helper
+python3.12 -m venv .venv && source .venv/bin/activate   # Python 3.10+; Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-cp .env.example .env            # put your ANTHROPIC_API_KEY here
-cp config.example.yaml config.yaml
-
-# Try it with the bundled sample documents first (no SharePoint needed):
-python -m kb_helper.cli -q "how do I create a ticket for VPN access?"
-
-# Web UI:
-python -m kb_helper.server      # then open http://127.0.0.1:8000
+python -m kb_helper.server          # then open http://127.0.0.1:8000
 ```
 
-The example config enables both `sharepoint` and `local-docs`. Remove or disable the ones you
-do not want.
+Everything else is done in the browser:
+
+1. **Settings** (bottom of the sidebar): paste your Anthropic API key, pick a model.
+2. **Add connector**: choose *SharePoint Online* (enter the site URLs you want searched) or
+   *Local folder* (for example the bundled `sample_kb`).
+3. For SharePoint, click **Sign in**, open the Microsoft link, enter the code, and log in with your
+   normal work account. No app registration or client secret needed.
+4. Ask a question.
+
+What you configure is saved to `config.yaml` next to the server (file permissions 600, because it
+holds the API key). You can still edit that file by hand or start from `config.example.yaml`;
+`ANTHROPIC_API_KEY` in the environment or a `.env` file overrides the key in the file.
+
+Terminal instead of browser: `python -m kb_helper.cli` (uses the same `config.yaml`).
 
 ## Connecting SharePoint
 
 ### Option A (default): sign in with your own account - no app registration
 
-Set `auth_mode: user` (the default). The first time you ask something, the helper shows a
-short code and a Microsoft link:
+Choose *Sign in with my own account* when adding the connector (`auth_mode: user` in the file).
+The helper shows a short code and a Microsoft link:
 
-* **Web UI** - a *Sign in to sharepoint* button appears in the header (and pops up automatically
-  when needed). Click it, open the link, enter the code, sign in with your normal work account
-  (MFA works). The chat notices when you are done.
+* **Web UI** - a *Sign in* button next to the connector in the sidebar (it also pops up right after
+  you add the connector, and whenever an answer needs it). Open the link, enter the code, sign in
+  with your normal work account (MFA works). The chat notices when you are done.
 * **CLI** - the code is printed in the terminal.
 
 The helper then acts as *you*: it can only read what your account can read. Refresh tokens are
@@ -95,7 +100,8 @@ unrelated sites).
 
 For a shared bot that should work without anyone signing in. In the Entra admin center create an
 app registration, add **application** permissions `Sites.Read.All` and `Files.Read.All` (grant
-admin consent), create a client secret, and configure:
+admin consent), create a client secret, and choose *App registration with client secret* in the
+connector form (or in the file):
 
 ```yaml
 options:
@@ -148,7 +154,12 @@ file is loaded automatically). `KB_HELPER_CONFIG` points to a different config f
 | POST | `/api/chat` | `{"message": "...", "session_id": "..."}` -> `{kind: answer|question|error, text, options, sources, events, auth_required, session_id}` |
 | GET | `/api/sessions/{id}` | transcript of a session |
 | POST | `/api/sessions/{id}/reset` | forget a conversation |
-| GET | `/api/connectors` | configured sources |
+| GET | `/api/settings` / PUT | model, effort, instructions, API key (write-only; only a hint is returned) |
+| GET | `/api/connector-types` | available connector types and their form fields |
+| GET | `/api/connectors` | configured sources with live status (`?session_id=` for per-user sign-in state) |
+| POST | `/api/connectors` | add a connector `{name, type, description, enabled, options}` |
+| PUT / DELETE | `/api/connectors/{name}` | edit (secrets may be sent back masked to keep them) / remove |
+| POST | `/api/connectors/{name}/test` | connectivity check |
 | GET | `/api/health` | model, connector status, config errors |
 | GET | `/api/auth?session_id=` | which connectors need a personal sign-in and whether this session has one |
 | POST | `/api/auth/{connector}/start?session_id=` | start a device-code sign-in; returns `user_code` + `verification_uri` |
@@ -162,9 +173,10 @@ SSO if you expose it beyond localhost.
 
 ## Adding another knowledge source
 
-1. Subclass `kb_helper.connectors.Connector`, set `type_name`, implement `search` and `fetch`
-   (see `local_folder.py` for a compact example, `sharepoint.py` for a full one). Raise
-   `ConnectorError` for problems the assistant should report to the user.
+1. Subclass `kb_helper.connectors.Connector`, set `type_name`/`type_label`, implement `search` and
+   `fetch` (see `local_folder.py` for a compact example, `sharepoint.py` for a full one). Raise
+   `ConnectorError` for problems the assistant should report to the user. Describe the options in
+   `config_fields()` and the *Add connector* dialog renders a form for it automatically.
 2. If users must sign in themselves, return an object with `start_login`, `status`, `sign_out`
    from `login_provider()` (the SharePoint connector's `UserLoginAuth` is reusable for any
    Microsoft Graph-based source such as OneDrive or Teams).

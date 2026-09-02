@@ -162,6 +162,7 @@ class Assistant:
         self,
         connectors: dict[str, Connector],
         client: anthropic.Anthropic | None = None,
+        api_key: str | None = None,
         model: str = "claude-opus-5",
         effort: str = "high",
         max_tokens: int = 16000,
@@ -170,7 +171,7 @@ class Assistant:
         max_tool_rounds: int = 12,
     ) -> None:
         self.connectors = connectors
-        self.client = client or anthropic.Anthropic()
+        self.client = client or anthropic.Anthropic(api_key=api_key)
         self.model = model
         self.effort = effort
         self.max_tokens = max_tokens
@@ -303,11 +304,22 @@ class Assistant:
         for _round in range(self.max_tool_rounds):
             try:
                 response = self._create_message(history)
-            except anthropic.APIError as exc:
+            except anthropic.AuthenticationError as exc:
+                log.error("Claude API authentication failed: %s", exc)
+                if _round == 0:
+                    history.pop()
+                return Turn(kind="error", text="The Anthropic API key was rejected. Check it under Settings.", events=events)
+            except (anthropic.APIError, TypeError) as exc:
+                # TypeError: the SDK raises it when no API key is configured at all.
                 log.error("Claude API error: %s", exc)
                 if _round == 0:
                     history.pop()  # keep history consistent so the user can simply retry
-                return Turn(kind="error", text=f"The assistant could not reach the model: {exc.__class__.__name__}: {exc}", events=events)
+                text = (
+                    "No Anthropic API key is configured. Add one under Settings."
+                    if isinstance(exc, TypeError)
+                    else f"The assistant could not reach the model: {exc.__class__.__name__}: {exc}"
+                )
+                return Turn(kind="error", text=text, events=events)
 
             if response.stop_reason == "refusal":
                 return Turn(

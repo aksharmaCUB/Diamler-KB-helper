@@ -140,3 +140,24 @@ def test_interactive_terminal_flow(tmp_path, capsys):
     auth = UserLoginAuth("sharepoint", token_cache_dir=str(tmp_path), interactive=True)
     assert auth.token() == "device-token"
     assert "Sign in to sharepoint" in capsys.readouterr().out
+
+
+def test_app_auth_is_lazy_and_reports_bad_tenant(monkeypatch):
+    import kb_helper.connectors.msgraph_auth as mod
+    from kb_helper.connectors.msgraph_auth import AppAuth
+
+    calls = []
+
+    class Broken:
+        def __init__(self, *a, **k):
+            calls.append(1)
+            raise ValueError("Unable to get authority configuration")
+
+    monkeypatch.setattr(mod.msal, "ConfidentialClientApplication", Broken)
+    auth = AppAuth("bad-tenant", "cid", "secret")
+    assert calls == []  # nothing happens at construction time
+    with pytest.raises(ConnectorError, match="configuration problem"):
+        auth.token()
+    with pytest.raises(ConnectorError):
+        auth.token()
+    assert len(calls) == 1  # the failure is cached briefly instead of hammering Microsoft

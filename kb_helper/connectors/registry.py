@@ -46,6 +46,42 @@ def resolve_connector_type(type_name: str) -> type[Connector]:
     raise ConnectorError(f"Unknown connector type {type_name!r}. Known types: {', '.join(sorted(types))}")
 
 
+def build_connector(entry: dict[str, Any]) -> Connector:
+    """Instantiate one config entry (see build_connectors for the shape)."""
+    name = entry.get("name")
+    type_name = entry.get("type")
+    if not name or not type_name:
+        raise ConnectorError("A connector needs both 'name' and 'type'")
+    cls = resolve_connector_type(str(type_name))
+    options = entry.get("options") or {}
+    if not isinstance(options, dict):
+        raise ConnectorError(f"connector {name!r}: options must be a mapping")
+    try:
+        return cls(name=name, description=entry.get("description", "") or "", **options)
+    except TypeError as exc:
+        raise ConnectorError(f"Bad options for connector {name!r} ({type_name}): {exc}") from exc
+
+
+def build_connectors_lenient(entries: list[dict[str, Any]]) -> tuple[dict[str, Connector], dict[str, str]]:
+    """Like build_connectors, but a broken entry is reported instead of aborting the others."""
+    connectors: dict[str, Connector] = {}
+    errors: dict[str, str] = {}
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict) or not entry.get("enabled", True):
+            continue
+        name = str(entry.get("name") or f"connectors[{index}]")
+        if name in connectors:
+            errors[name] = f"Duplicate connector name {name!r}"
+            continue
+        try:
+            connectors[name] = build_connector(entry)
+        except ConnectorError as exc:
+            errors[name] = str(exc)
+        except Exception as exc:  # noqa: BLE001 - a connector's __init__ may fail in many ways
+            errors[name] = f"{exc.__class__.__name__}: {exc}"
+    return connectors, errors
+
+
 def build_connectors(entries: list[dict[str, Any]]) -> dict[str, Connector]:
     """Instantiate each enabled entry. Entry shape::
 
@@ -62,17 +98,7 @@ def build_connectors(entries: list[dict[str, Any]]) -> dict[str, Connector]:
         if not entry.get("enabled", True):
             continue
         name = entry.get("name")
-        type_name = entry.get("type")
-        if not name or not type_name:
-            raise ConnectorError(f"connectors[{index}] needs both 'name' and 'type'")
         if name in connectors:
             raise ConnectorError(f"Duplicate connector name {name!r}")
-        cls = resolve_connector_type(str(type_name))
-        options = entry.get("options") or {}
-        if not isinstance(options, dict):
-            raise ConnectorError(f"connectors[{index}].options must be a mapping")
-        try:
-            connectors[name] = cls(name=name, description=entry.get("description", ""), **options)
-        except TypeError as exc:
-            raise ConnectorError(f"Bad options for connector {name!r} ({type_name}): {exc}") from exc
+        connectors[str(name)] = build_connector(entry)
     return connectors
