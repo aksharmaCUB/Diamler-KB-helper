@@ -193,3 +193,32 @@ def test_auth_required_is_surfaced(kb_dir):
     turn = assistant.respond(history, "how do I deploy?")
     assert turn.auth_required == ["sharepoint"]
     assert "not signed in to sharepoint" in history[2]["content"][0]["content"]
+
+
+def test_only_connectors_restricts_search(kb_dir):
+    from kb_helper.connectors import Connector
+    from kb_helper.models import SearchHit
+
+    class Other(Connector):
+        type_name = "other"
+
+        def search(self, query, limit=8):
+            return [SearchHit(self.name, "x", "Other doc", "from other")]
+
+        def fetch(self, document_id):
+            raise AssertionError("not used")
+
+    connectors = {"docs": LocalFolderConnector("docs", path=str(kb_dir)), "other": Other("other")}
+    client = FakeClient(
+        [
+            message([tool_use(SEARCH_TOOL, {"query": "deploy"}, "a"), tool_use(SEARCH_TOOL, {"query": "deploy", "connector": "other"}, "b")], "tool_use"),
+            message([text("done")], "end_turn"),
+        ]
+    )
+    assistant = Assistant(connectors, client=client)
+    history = []
+    assistant.respond(history, "how do I deploy?", only_connectors=["docs"])
+    assert "Search only these sources" in history[0]["content"]
+    results = history[2]["content"]
+    assert "deploy-guide.md" in results[0]["content"] and "Other doc" not in results[0]["content"]
+    assert "limited this question to docs" in results[1]["content"]

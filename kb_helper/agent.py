@@ -206,14 +206,23 @@ class Assistant:
         return self.client.messages.create(**kwargs)
 
     # ------------------------------------------------------------------ tools
-    def _run_search(self, args: dict[str, Any], sources: dict[tuple[str, str], Source], auth_required: set[str] | None = None) -> str:
+    def _run_search(
+        self,
+        args: dict[str, Any],
+        sources: dict[tuple[str, str], Source],
+        auth_required: set[str] | None = None,
+        only_connectors: list[str] | None = None,
+    ) -> str:
         query = str(args.get("query", "")).strip()
         limit = int(args.get("limit") or 8)
         wanted = args.get("connector")
-        targets = list(self.connectors.values())
+        allowed = {n: c for n, c in self.connectors.items() if not only_connectors or n in only_connectors}
+        targets = list(allowed.values())
         if wanted:
             if wanted not in self.connectors:
                 return f"Error: unknown connector {wanted!r}. Available: {', '.join(self.connectors) or 'none'}"
+            if wanted not in allowed:
+                return f"The user limited this question to {', '.join(allowed) or 'no sources'}; {wanted!r} is not searched for this turn."
             targets = [self.connectors[wanted]]
         if not targets:
             return "Error: no knowledge sources are configured."
@@ -287,8 +296,12 @@ class Assistant:
         history: list[dict[str, Any]],
         user_message: str,
         on_event: EventHandler | None = None,
+        only_connectors: list[str] | None = None,
     ) -> Turn:
-        """Append ``user_message`` to ``history`` (mutated in place) and run the loop."""
+        """Append ``user_message`` to ``history`` (mutated in place) and run the loop.
+
+        ``only_connectors`` restricts searches for this turn to the named sources (the UI's
+        "Select Source" dropdown); reads of already-found documents are not restricted."""
         events: list[Event] = []
         sources: dict[tuple[str, str], Source] = {}
         auth_required: set[str] = set()
@@ -298,7 +311,10 @@ class Assistant:
             if on_event:
                 on_event(event)
 
-        history.append({"role": "user", "content": user_message})
+        content: Any = user_message
+        if only_connectors:
+            content = f"{user_message}\n\n(Search only these sources for this question: {', '.join(only_connectors)}.)"
+        history.append({"role": "user", "content": content})
         preface: list[str] = []
 
         for _round in range(self.max_tool_rounds):
@@ -346,7 +362,7 @@ class Assistant:
                 args = call.input if isinstance(call.input, dict) else json.loads(call.input)
                 if call.name == SEARCH_TOOL:
                     emit({"type": "search", "query": args.get("query"), "connector": args.get("connector")})
-                    content = self._run_search(args, sources, auth_required)
+                    content = self._run_search(args, sources, auth_required, only_connectors)
                 elif call.name == READ_TOOL:
                     emit({"type": "read", "connector": args.get("connector"), "document_id": args.get("document_id")})
                     content = self._run_read(args, sources, auth_required)

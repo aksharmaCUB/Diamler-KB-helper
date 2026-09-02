@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,8 @@ KNOWN_MODELS = [
     {"id": "claude-opus-4-8", "label": "Claude Opus 4.8"},
 ]
 _NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9 _.-]{0,39}$"
+UPLOADS_CONNECTOR = "uploads"
+MAX_UPLOAD_BYTES = 50_000_000
 
 
 class SessionStore:
@@ -115,6 +117,7 @@ class AppState:
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1, max_length=20_000)
     session_id: str | None = Field(default=None, max_length=64, pattern=r"^[A-Za-z0-9_-]*$")
+    connector: str | None = Field(default=None, max_length=40)  # limit this question to one source
 
 
 class SettingsUpdate(BaseModel):
@@ -345,6 +348,47 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"No connector named {name!r}")
         return connector_status(name, session_id)
 
+    # ------------------------------------------------------------------ uploads
+    def uploads_dir() -> Path:
+        return store.path.resolve().parent / "uploads"
+
+    @app.post("/api/uploads", status_code=201)
+    def upload_files(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+        """Store files next to the config and expose them through a local_folder connector
+        named 'uploads' (created on first use)."""
+        from .connectors.extract import is_supported
+
+        target = uploads_dir()
+        target.mkdir(parents=True, exist_ok=True)
+        saved: list[str] = []
+        skipped: list[str] = []
+        for upload in files:
+            name = Path(upload.filename or "").name
+            if not name or name.startswith("."):
+                continue
+            if not is_supported(name):
+                skipped.append(name)
+                continue
+            data = upload.file.read(MAX_UPLOAD_BYTES + 1)
+            if len(data) > MAX_UPLOAD_BYTES:
+                skipped.append(f"{name} (over {MAX_UPLOAD_BYTES // 1_000_000} MB)")
+                continue
+            (target / name).write_bytes(data)
+            saved.append(name)
+        if saved and store.get_connector(UPLOADS_CONNECTOR) is None:
+            with state.lock:
+                store.upsert_connector({
+                    "name": UPLOADS_CONNECTOR,
+                    "type": "local_folder",
+                    "description": "Files uploaded through the chat UI",
+                    "enabled": True,
+                    "options": {"path": str(target)},
+                })
+                _save_and_rebuild()
+        else:
+            state.rebuild()  # refresh file counts
+        return {"saved": saved, "skipped": skipped, "connector": UPLOADS_CONNECTOR, "path": str(target)}
+
     # ------------------------------------------------------------------ chat
     @app.post("/api/chat")
     def chat(request: ChatRequest) -> JSONResponse:
@@ -352,11 +396,16 @@ def create_app(
         if not state.settings.api_key and state.injected_assistant is None:
             turn = Turn(kind="error", text="No Anthropic API key is configured yet. Open Settings and add one.")
             return JSONResponse({"session_id": session_id, "setup_required": "api_key", **turn.to_dict()})
+        only: list[str] | None = None
+        if request.connector:
+            if request.connector not in state.assistant.connectors:
+                raise HTTPException(status_code=422, detail=f"Unknown or disabled connector {request.connector!r}")
+            only = [request.connector]
         if not session["lock"].acquire(blocking=False):
             raise HTTPException(status_code=409, detail="This session is still processing a previous message.")
         token = current_user.set(session_id)
         try:
-            turn = state.assistant.respond(session["history"], request.message)
+            turn = state.assistant.respond(session["history"], request.message, only_connectors=only)
             session["transcript"].append({"role": "user", "text": request.message})
             session["transcript"].append({"role": "assistant", **turn.to_dict()})
         finally:

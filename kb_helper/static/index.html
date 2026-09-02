@@ -279,6 +279,8 @@
   .source-meta strong { display: block; font-size: 13px; font-weight: 600; }
   .source-meta span, .source-meta a { display: block; font-size: 12px; color: var(--muted); text-decoration: none; }
   .dot-ok { width: 10px; height: 10px; border: 0; padding: 0; border-radius: 50%; background: var(--ok); flex: none; box-shadow: 0 0 0 3px rgba(34,197,94,.15); cursor: pointer; }
+  .dot-ok.bad { background: var(--danger); box-shadow: 0 0 0 3px rgba(239,68,68,.15); }
+  .dot-ok.off { background: var(--muted); box-shadow: 0 0 0 3px rgba(107,114,128,.15); }
   .tile .source-ic { width: 28px; height: 28px; font-size: 12px; }
   .source-action {
     border: 0; background: var(--accent-soft); color: var(--accent);
@@ -516,6 +518,7 @@
 </div>
 
 
+<input type="file" id="fileInput" multiple hidden accept=".pdf,.docx,.xlsx,.pptx,.txt,.md,.markdown,.csv,.tsv,.json,.yaml,.yml,.html,.htm,.xml,.log">
 <div id="scrim"></div>
 <div class="toast" id="toast"></div>
 <div class="modal-bg" id="settingsModal">
@@ -569,7 +572,8 @@
   const chat = $('chat'), form = $('form'), input = $('input'), send = $('send');
   const CATALOG = [
     { key: 'sharepoint', name: 'SharePoint', hint: 'Microsoft 365', color: '#038387', type: 'sharepoint' },
-    { key: 'upload', name: 'Upload Files', hint: 'Local folder', color: '#3b82f6', type: 'local_folder' },
+    { key: 'upload', name: 'Upload Files', hint: 'PDF, Word, Excel, Markdown...', color: '#3b82f6', upload: true },
+    { key: 'folder', name: 'Local Folder', hint: 'A folder on this machine', color: '#3b82f6', type: 'local_folder' },
     { key: 'onedrive', name: 'OneDrive', hint: 'Not available yet', color: '#0078D4' },
     { key: 'slack', name: 'Slack', hint: 'Not available yet', color: '#4A154B' },
     { key: 'github', name: 'GitHub', hint: 'Not available yet', color: '#181717' },
@@ -646,7 +650,13 @@
       ]);
     } catch (err) { toast('Could not load configuration: ' + err.message); return; }
     const signed = connectors.find(c => (c.status || {}).signed_in && (c.status || {}).account);
-    if (signed) $('user-email').textContent = signed.status.account;
+    const email = signed ? signed.status.account : '';
+    $('user-email').textContent = email || 'Not signed in';
+    const nameEl = document.querySelector('#user .user-meta strong'), avatar = document.querySelector('#user .avatar');
+    if (email) {
+      const local = email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase());
+      nameEl.textContent = local; avatar.textContent = local[0] || 'U';
+    } else { nameEl.textContent = 'Guest'; avatar.textContent = 'G'; }
     renderSources();
     if (!hasMessages) renderWelcome();
   }
@@ -742,7 +752,8 @@
     const pending = addMessage('assistant', '', {});
     pending.querySelector('.bubble').innerHTML = '<span class="thinking">Searching the knowledge base…</span>';
     try {
-      const data = await api('POST', '/api/chat', { message: text, session_id: sessionId });
+      const only = $('source-filter').value || null;
+      const data = await api('POST', '/api/chat', { message: text, session_id: sessionId, connector: only });
       sessionId = data.session_id; persistSession();
       pending.remove();
       addMessage('assistant', data.text, data);
@@ -769,12 +780,13 @@
       connectedEl.innerHTML = connectors.map(c => {
         const st = c.status || {};
         const needsLogin = c.needs_login && !st.signed_in;
-        const hint = st.account || c.type_label || c.type;
-        const action = needsLogin
+        const broken = c.enabled && st.error && st.error !== 'disabled';
+        const hint = !c.enabled ? 'Disabled' : (broken ? st.error : (st.account || (st.files != null ? st.files + ' files' : (c.type_label || c.type))));
+        const action = needsLogin && c.enabled
           ? `<button type="button" class="source-action" data-signin="${esc(c.name)}">Sign in</button>`
           : (c.needs_login && st.signed_in
             ? `<button type="button" class="dot-ok" data-signout="${esc(c.name)}" title="Sign out"></button>`
-            : `<span class="dot-ok" title="${esc(st.error || 'Connected')}"></span>`);
+            : `<span class="dot-ok${!c.enabled ? ' off' : (broken ? ' bad' : '')}" title="${esc(!c.enabled ? 'Disabled' : (st.error || 'Connected'))}"></span>`);
         return `<div class="source" data-edit="${esc(c.name)}">${brandMark(c.name, c.type)}<div class="source-meta"><strong>${esc(c.name)}</strong><span>${esc(hint)}</span></div>${action}</div>`;
       }).join('');
     }
@@ -782,7 +794,8 @@
       `<div class="source">${brandMark(item.name, item.type)}<div class="source-meta"><strong>${esc(item.name)}</strong><span>${esc(item.hint)}</span></div><button type="button" class="source-action" data-catalog="${item.key}">Connect</button></div>`
     ).join('');
     const keep = select.value;
-    select.innerHTML = '<option value="">Select Source</option>' + connectors.filter(c => c.enabled).map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('');
+    const usable = connectors.filter(c => c.enabled && !((c.status || {}).error && c.status.error !== 'disabled'));
+    select.innerHTML = '<option value="">' + (usable.length ? 'All sources' : 'Select Source') + '</option>' + usable.map(c => `<option value="${esc(c.name)}">${esc(c.name)}</option>`).join('');
     if ([...select.options].some(o => o.value === keep)) select.value = keep;
     $('connector-grid').innerHTML = GRID.map(key => {
       const item = CATALOG.find(x => x.key === key);
@@ -816,6 +829,7 @@
     if (!cat) return;
     const item = CATALOG.find(x => x.key === cat.dataset.catalog);
     if (!item) return;
+    if (item.upload) { $('fileInput').click(); return; }
     const live = item.type && connectors.find(c => c.type === item.type);
     if (live && live.needs_login && !(live.status || {}).signed_in) { startLogin(live.name); return; }
     if (live) { openConnector(live); return; }
@@ -882,7 +896,23 @@
   $('gear').onclick = openSettings;
   $('bell').onclick = () => toast('No new notifications');
   $('upgrade').onclick = () => toast('Billing is not enabled in this build.');
-  $('attach').onclick = () => openConnector(null, 'local_folder');
+  $('attach').onclick = () => $('fileInput').click();
+  $('fileInput').addEventListener('change', async () => {
+    const files = [...$('fileInput').files]; $('fileInput').value = '';
+    if (!files.length) return;
+    const fd = new FormData(); files.forEach(f => fd.append('files', f));
+    toast('Uploading ' + files.length + ' file(s)…');
+    try {
+      const res = await fetch('/api/uploads', { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      const parts = [];
+      if (data.saved.length) parts.push(data.saved.length + ' file(s) added to “' + data.connector + '”');
+      if (data.skipped.length) parts.push('skipped: ' + data.skipped.join(', '));
+      toast(parts.join(' · ') || 'Nothing uploaded');
+      await loadAll();
+    } catch (err) { toast('Upload failed: ' + err.message); }
+  });
   $('sparkle').onclick = () => toast(input.value.trim() ? 'The assistant already rewrites search queries.' : 'Type a question first');
 
   form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value; input.value = ''; input.style.height = 'auto'; submit(t); });

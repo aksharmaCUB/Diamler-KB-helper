@@ -53,11 +53,13 @@ python -m kb_helper.server          # then open http://127.0.0.1:8000
 Everything else is done in the browser:
 
 1. **Settings** (bottom of the sidebar): paste your Anthropic API key, pick a model.
-2. **Add connector**: choose *SharePoint Online* (enter the site URLs you want searched) or
-   *Local folder* (for example the bundled `sample_kb`).
+2. **Add a source**: click the *SharePoint* tile (enter the site URLs you want searched), the
+   *Upload Files* tile or the paperclip (drops PDFs, Word, Excel, Markdown... into an `uploads`
+   source next to the config), or *Add New Source* for a folder on the machine (for example the
+   bundled `sample_kb`).
 3. For SharePoint, click **Sign in**, open the Microsoft link, enter the code, and log in with your
    normal work account. No app registration or client secret needed.
-4. Ask a question.
+4. Ask a question. The *All sources* dropdown in the composer limits a question to one source.
 
 What you configure is saved to `config.yaml` next to the server (file permissions 600, because it
 holds the API key). You can still edit that file by hand or start from `config.example.yaml`;
@@ -151,7 +153,7 @@ file is loaded automatically). `KB_HELPER_CONFIG` points to a different config f
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/api/chat` | `{"message": "...", "session_id": "..."}` -> `{kind: answer|question|error, text, options, sources, events, auth_required, session_id}` |
+| POST | `/api/chat` | `{"message": "...", "session_id": "...", "connector": "optional source name"}` -> `{kind: answer|question|error, text, options, sources, events, auth_required, session_id}` |
 | GET | `/api/sessions/{id}` | transcript of a session |
 | POST | `/api/sessions/{id}/reset` | forget a conversation |
 | GET | `/api/settings` / PUT | model, effort, instructions, API key (write-only; only a hint is returned) |
@@ -160,6 +162,7 @@ file is loaded automatically). `KB_HELPER_CONFIG` points to a different config f
 | POST | `/api/connectors` | add a connector `{name, type, description, enabled, options}` |
 | PUT / DELETE | `/api/connectors/{name}` | edit (secrets may be sent back masked to keep them) / remove |
 | POST | `/api/connectors/{name}/test` | connectivity check |
+| POST | `/api/uploads` | multipart `files[]`; stored under `uploads/` next to the config and exposed as the `uploads` source |
 | GET | `/api/health` | model, connector status, config errors |
 | GET | `/api/auth?session_id=` | which connectors need a personal sign-in and whether this session has one |
 | POST | `/api/auth/{connector}/start?session_id=` | start a device-code sign-in; returns `user_code` + `verification_uri` |

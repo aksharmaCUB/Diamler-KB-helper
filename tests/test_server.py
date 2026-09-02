@@ -14,7 +14,7 @@ class ScriptedAssistant(Assistant):
         super().__init__(connectors, client=object())
         self.calls = []
 
-    def respond(self, history, user_message, on_event=None):
+    def respond(self, history, user_message, on_event=None, only_connectors=None):
         self.calls.append(user_message)
         history.append({"role": "user", "content": user_message})
         if len(self.calls) == 1:
@@ -113,7 +113,7 @@ def test_chat_sets_current_user_context(kb_dir):
     seen = []
 
     class Recorder(ScriptedAssistant):
-        def respond(self, history, user_message, on_event=None):
+        def respond(self, history, user_message, on_event=None, only_connectors=None):
             seen.append(current_user.get())
             return Turn(kind="answer", text="ok")
 
@@ -217,10 +217,49 @@ def test_settings_and_connector_management(tmp_path, kb_dir, monkeypatch):
 
 def test_unhandled_errors_are_json(kb_dir):
     class Exploding(ScriptedAssistant):
-        def respond(self, history, user_message, on_event=None):
+        def respond(self, history, user_message, on_event=None, only_connectors=None):
             raise RuntimeError("boom")
 
     connectors = {"docs": LocalFolderConnector("docs", "Docs", path=str(kb_dir))}
     client = TestClient(create_app(assistant=Exploding(connectors), config_path=str(kb_dir / "c.yaml")), raise_server_exceptions=False)
     res = client.post("/api/chat", json={"message": "hi"})
     assert res.status_code == 500 and res.json()["detail"] == "RuntimeError: boom"
+
+
+def test_chat_connector_filter_is_validated_and_passed(kb_dir):
+    seen = []
+
+    class Recorder(ScriptedAssistant):
+        def respond(self, history, user_message, on_event=None, only_connectors=None):
+            seen.append(only_connectors)
+            return Turn(kind="answer", text="ok")
+
+    connectors = {"docs": LocalFolderConnector("docs", "Docs", path=str(kb_dir))}
+    client = TestClient(create_app(assistant=Recorder(connectors), config_path=str(kb_dir / "c.yaml")))
+    assert client.post("/api/chat", json={"message": "hi", "connector": "docs"}).status_code == 200
+    assert client.post("/api/chat", json={"message": "hi"}).status_code == 200
+    assert client.post("/api/chat", json={"message": "hi", "connector": "nope"}).status_code == 422
+    assert seen == [["docs"], None]
+
+
+def test_uploads_create_connector(tmp_path, monkeypatch):
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    config = tmp_path / "config.yaml"
+    client = TestClient(create_app(config_path=str(config)))
+    res = client.post("/api/uploads", files=[
+        ("files", ("Runbook.md", b"# Runbook\nRestart the pricing service with systemctl.", "text/markdown")),
+        ("files", ("photo.png", b"\x89PNG", "image/png")),
+        ("files", ("../evil.txt", b"x", "text/plain")),
+    ])
+    assert res.status_code == 201
+    body = res.json()
+    assert body["saved"] == ["Runbook.md", "evil.txt"] and body["skipped"] == ["photo.png"]
+    assert (tmp_path / "uploads" / "Runbook.md").exists() and not (tmp_path.parent / "evil.txt").exists()
+    listed = client.get("/api/connectors").json()
+    assert listed[0]["name"] == "uploads" and listed[0]["status"]["files"] == 2
+    hits = client.app.state.state.assistant.connectors["uploads"].search("pricing restart")
+    assert hits and hits[0].document_id == "Runbook.md"
+    # A second upload reuses the connector.
+    client.post("/api/uploads", files=[("files", ("more.txt", b"hello", "text/plain"))])
+    assert len(client.get("/api/connectors").json()) == 1
+    assert client.get("/api/connectors").json()[0]["status"]["files"] == 3
