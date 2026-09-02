@@ -1,0 +1,70 @@
+# Copy to config.yaml and adjust. Secrets can be pulled from the environment / .env
+# with ${VAR} or ${VAR:-default}.
+
+assistant:
+  model: claude-opus-5        # any current Claude model id
+  effort: high                # low | medium | high | xhigh | max  (cost/quality knob)
+  max_tokens: 16000
+  fallbacks: true             # server-side refusal fallback (Claude API only; set false on Bedrock/Vertex/Foundry)
+  max_tool_rounds: 12         # max search/read steps per user message
+  extra_instructions: |
+    Our ticketing system is ServiceNow. When a procedure mentions "raise a ticket", the
+    default category is "IT Service Request" unless the document says otherwise.
+
+server:
+  host: 127.0.0.1
+  port: 8000
+
+connectors:
+  # --- SharePoint Online via Microsoft Graph, signing in as yourself (default) ------------
+  # No app registration or client secret needed: users press "Sign in to sharepoint" in the
+  # chat UI (or follow the code printed by the CLI), log in with their normal work account
+  # and the helper sees only what that account can see.
+  - name: sharepoint
+    type: sharepoint
+    description: Company SharePoint - IT runbooks, deployment guides, HR and ticketing docs
+    enabled: true
+    options:
+      auth_mode: user
+      # Optional: your tenant id or domain (default "organizations" = any work account).
+      # tenant_id: contoso.onmicrosoft.com
+      # Optional: a public client id of your own app registration. The default is
+      # Microsoft's built-in "Microsoft Graph Command Line Tools" client.
+      # client_id: 00000000-0000-0000-0000-000000000000
+      # Restrict search to these sites (recommended; leave out to search everything you can see).
+      sites:
+        - https://contoso.sharepoint.com/sites/IT
+        - https://contoso.sharepoint.com/sites/Engineering
+      token_cache_dir: .kb_helper_tokens   # per-user refresh tokens, chmod 600
+
+  # --- SharePoint with an app registration (unattended, shared identity) --------------------
+  # Use this only if IT can give you an app with *application* permissions Sites.Read.All /
+  # Files.Read.All and a client secret.
+  - name: sharepoint-service
+    type: sharepoint
+    description: Company SharePoint (service account)
+    enabled: false
+    options:
+      auth_mode: client_credentials
+      tenant_id: ${AZURE_TENANT_ID}
+      client_id: ${AZURE_CLIENT_ID}
+      client_secret: ${AZURE_CLIENT_SECRET}
+      sites:
+        - https://contoso.sharepoint.com/sites/IT
+      # Required by Microsoft for the Search API with application permissions:
+      # NAM (North America), EMEA, APC, ...
+      search_region: EMEA
+
+  # --- Local folder (handy for testing, or for docs that live in a git repo) ---------------
+  - name: local-docs
+    type: local_folder
+    description: Sample runbooks shipped with this repository
+    enabled: true
+    options:
+      path: ./sample_kb
+
+  # --- Adding your own source later ---------------------------------------------------
+  # Write a Connector subclass (see kb_helper/connectors/local_folder.py) and point at it:
+  # - name: confluence
+  #   type: my_connectors.confluence:ConfluenceConnector
+  #   options: { base_url: ..., token: ${CONFLUENCE_TOKEN} }

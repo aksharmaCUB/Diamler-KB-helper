@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KB Helper</title>
+<style>
+  :root { --bg:#f6f7f9; --panel:#fff; --ink:#1c1f24; --muted:#6b7280; --line:#e5e7eb; --accent:#2563eb; --accent-ink:#fff; --user:#e8efff; --ask:#fff7e6; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111418; --panel:#181c22; --ink:#e6e8eb; --muted:#9aa3ad; --line:#2a3039; --accent:#3b82f6; --user:#1f2a44; --ask:#3a2f14; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; background:var(--bg); color:var(--ink); }
+  header { display:flex; align-items:center; gap:12px; padding:12px 20px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header h1 { font-size:17px; margin:0; }
+  header .sources { color:var(--muted); font-size:13px; flex:1; }
+  header button { background:none; border:1px solid var(--line); color:var(--ink); padding:6px 10px; border-radius:6px; cursor:pointer; }
+  main { max-width: 880px; margin: 0 auto; padding: 20px 16px 140px; }
+  .msg { display:flex; flex-direction:column; gap:6px; margin:14px 0; }
+  .msg .bubble { padding:12px 16px; border-radius:12px; background:var(--panel); border:1px solid var(--line); white-space:pre-wrap; word-wrap:break-word; }
+  .msg.user .bubble { background:var(--user); align-self:flex-end; max-width:85%; }
+  .msg.assistant .bubble { align-self:flex-start; max-width:95%; }
+  .msg.question .bubble { background:var(--ask); }
+  .msg.error .bubble { border-color:#dc2626; }
+  .bubble a { color:var(--accent); }
+  .bubble code { background:rgba(127,127,127,.15); padding:1px 4px; border-radius:4px; }
+  .bubble pre { background:rgba(127,127,127,.12); padding:10px; border-radius:8px; overflow-x:auto; }
+  .options { display:flex; flex-wrap:wrap; gap:8px; }
+  .options button { background:var(--accent); color:var(--accent-ink); border:none; padding:7px 12px; border-radius:999px; cursor:pointer; font-size:14px; }
+  .options button:disabled { opacity:.5; cursor:default; }
+  .cites { font-size:13px; color:var(--muted); }
+  .cites a { color:var(--accent); text-decoration:none; }
+  .trace { font-size:12px; color:var(--muted); }
+  .thinking { color:var(--muted); font-style:italic; }
+  form { position:fixed; bottom:0; left:0; right:0; background:var(--panel); border-top:1px solid var(--line); padding:12px 16px; }
+  form .row { max-width:880px; margin:0 auto; display:flex; gap:10px; }
+  textarea { flex:1; resize:none; min-height:48px; max-height:160px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--bg); color:var(--ink); font:inherit; }
+  form button { background:var(--accent); color:var(--accent-ink); border:none; padding:0 18px; border-radius:10px; cursor:pointer; font-size:15px; }
+  form button:disabled { opacity:.5; cursor:default; }
+  .hint { max-width:880px; margin:6px auto 0; font-size:12px; color:var(--muted); }
+  .auth { display:flex; gap:8px; align-items:center; font-size:13px; color:var(--muted); }
+  .auth .signin { background:var(--accent); color:var(--accent-ink); border:none; }
+  .signin-card { border:1px solid var(--line); background:var(--panel); border-radius:12px; padding:14px 16px; margin:14px 0; }
+  .signin-card .code { font: 600 22px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing:2px; margin:8px 0; }
+  .signin-card a { color:var(--accent); }
+</style>
+</head>
+<body>
+<header>
+  <h1>KB Helper</h1>
+  <div class="sources" id="sources">loading sources…</div>
+  <div id="auth" class="auth"></div>
+  <button id="reset" type="button">New conversation</button>
+</header>
+<main id="chat"></main>
+<form id="form">
+  <div class="row">
+    <textarea id="input" placeholder="Ask e.g. “How do I deploy the pricing service to staging?” or “How do I raise an IT ticket?”" rows="1"></textarea>
+    <button id="send" type="submit">Send</button>
+  </div>
+  <div class="hint">Enter to send, Shift+Enter for a new line. Answers come from the connected knowledge sources; the helper will ask when it needs more detail.</div>
+</form>
+<script>
+(function () {
+  const chat = document.getElementById('chat');
+  const form = document.getElementById('form');
+  const input = document.getElementById('input');
+  const send = document.getElementById('send');
+  const sourcesEl = document.getElementById('sources');
+  let sessionId = null;
+  try { sessionId = localStorage.getItem('kb_session') || null; } catch (e) {}
+  if (!sessionId) {
+    sessionId = (window.crypto && crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36) + Math.random().toString(36).slice(2)).replace(/-/g, '');
+    try { localStorage.setItem('kb_session', sessionId); } catch (e) {}
+  }
+  let busy = false;
+  const authEl = document.getElementById('auth');
+  let authState = {};
+
+  async function refreshAuth() {
+    try {
+      const res = await fetch('/api/auth?session_id=' + encodeURIComponent(sessionId));
+      authState = (await res.json()).connectors || {};
+    } catch (e) { authState = {}; }
+    authEl.innerHTML = '';
+    Object.entries(authState).forEach(([name, st]) => {
+      const span = document.createElement('span');
+      if (st.signed_in) {
+        span.textContent = `${name}: ${st.account || 'signed in'} `;
+        const out = document.createElement('button'); out.type = 'button'; out.textContent = 'Sign out';
+        out.onclick = async () => { await fetch(`/api/auth/${encodeURIComponent(name)}/signout?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' }); refreshAuth(); };
+        span.appendChild(out);
+      } else {
+        const btn = document.createElement('button'); btn.type = 'button'; btn.className = 'signin';
+        btn.textContent = `Sign in to ${name}`;
+        btn.onclick = () => startLogin(name);
+        span.appendChild(btn);
+      }
+      authEl.appendChild(span);
+    });
+  }
+
+  async function startLogin(name) {
+    let info;
+    try {
+      const res = await fetch(`/api/auth/${encodeURIComponent(name)}/start?session_id=${encodeURIComponent(sessionId)}`, { method: 'POST' });
+      info = await res.json();
+      if (!res.ok) throw new Error(info.detail || res.statusText);
+    } catch (err) { addMessage('assistant', 'Could not start sign-in: ' + err.message, { kind: 'error' }); return; }
+    const card = document.createElement('div');
+    card.className = 'signin-card';
+    card.innerHTML = `<div><b>Sign in to ${escapeHtml(name)} with your work account</b></div>
+      <div>1. Open <a href="${escapeHtml(info.verification_uri)}" target="_blank" rel="noopener">${escapeHtml(info.verification_uri)}</a></div>
+      <div>2. Enter this code: <div class="code">${escapeHtml(info.user_code)}</div></div>
+      <div class="thinking" id="signin-status">Waiting for you to finish signing in…</div>`;
+    chat.appendChild(card);
+    window.scrollTo(0, document.body.scrollHeight);
+    const statusEl = card.querySelector('#signin-status');
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/auth/${encodeURIComponent(name)}/status?session_id=${encodeURIComponent(sessionId)}`);
+        const st = await res.json();
+        if (st.state === 'signed_in') { statusEl.textContent = `Signed in as ${st.account}. You can ask your question now.`; refreshAuth(); return; }
+        if (st.state === 'error') { statusEl.textContent = 'Sign-in failed: ' + st.error; refreshAuth(); return; }
+      } catch (e) {}
+      setTimeout(poll, 3000);
+    };
+    setTimeout(poll, 3000);
+  }
+
+  const escapeHtml = (s) => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  function render(md) {
+    // Minimal markdown: code blocks, inline code, bold, links, bullet/numbered lists are left as text.
+    let html = escapeHtml(md);
+    html = html.replace(/```([\s\S]*?)```/g, (_, code) => '<pre>' + code.replace(/^\n/, '') + '</pre>');
+    html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    html = html.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    html = html.replace(/_([^_\n]{2,})_/g, '<i>$1</i>');
+    html = html.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+    html = html.replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
+    return html;
+  }
+
+  function addMessage(role, text, extra) {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg ' + role + (extra && extra.kind ? ' ' + extra.kind : '');
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble';
+    bubble.innerHTML = render(text || '');
+    wrap.appendChild(bubble);
+    if (extra && extra.events && extra.events.length) {
+      const trace = document.createElement('div');
+      trace.className = 'trace';
+      trace.textContent = extra.events.map(e => e.type === 'search' ? `searched “${e.query}”${e.connector ? ' in ' + e.connector : ''}` : `read ${e.document_id}`).join(' · ');
+      wrap.appendChild(trace);
+    }
+    if (extra && extra.sources && extra.sources.length) {
+      const cites = document.createElement('div');
+      cites.className = 'cites';
+      cites.innerHTML = 'Sources: ' + extra.sources.map(s => s.url ? `<a href="${escapeHtml(s.url)}" target="_blank" rel="noopener">${escapeHtml(s.title)}</a>` : escapeHtml(s.title)).join(' · ');
+      wrap.appendChild(cites);
+    }
+    if (extra && extra.options && extra.options.length) {
+      const opts = document.createElement('div');
+      opts.className = 'options';
+      extra.options.forEach(o => {
+        const b = document.createElement('button');
+        b.type = 'button'; b.textContent = o;
+        b.onclick = () => { opts.querySelectorAll('button').forEach(x => x.disabled = true); submit(o); };
+        opts.appendChild(b);
+      });
+      wrap.appendChild(opts);
+    }
+    chat.appendChild(wrap);
+    window.scrollTo(0, document.body.scrollHeight);
+    return wrap;
+  }
+
+  async function submit(text) {
+    if (busy || !text.trim()) return;
+    busy = true; send.disabled = true;
+    addMessage('user', text);
+    const pending = addMessage('assistant', '', {});
+    pending.querySelector('.bubble').innerHTML = '<span class="thinking">Searching the knowledge base…</span>';
+    try {
+      const res = await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: text, session_id: sessionId }) });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || res.statusText);
+      sessionId = data.session_id;
+      try { localStorage.setItem('kb_session', sessionId); } catch (e) {}
+      pending.remove();
+      addMessage('assistant', data.text, data);
+      if (data.auth_required && data.auth_required.length) {
+        data.auth_required.forEach(name => { if (authState[name] && !authState[name].signed_in) startLogin(name); });
+      }
+    } catch (err) {
+      pending.remove();
+      addMessage('assistant', 'Something went wrong: ' + err.message, { kind: 'error' });
+    } finally {
+      busy = false; send.disabled = false; input.focus();
+    }
+  }
+
+  form.addEventListener('submit', (e) => { e.preventDefault(); const t = input.value; input.value = ''; input.style.height = 'auto'; submit(t); });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
+  input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 160) + 'px'; });
+  document.getElementById('reset').onclick = async () => {
+    if (sessionId) { try { await fetch('/api/sessions/' + sessionId + '/reset', { method: 'POST' }); } catch (e) {} }
+    chat.innerHTML = ''; input.focus();
+  };
+
+  async function restore() {
+    if (!sessionId) return;
+    try {
+      const res = await fetch('/api/sessions/' + sessionId);
+      const data = await res.json();
+      (data.transcript || []).forEach(m => m.role === 'user' ? addMessage('user', m.text) : addMessage('assistant', m.text, m));
+    } catch (e) {}
+  }
+  fetch('/api/connectors').then(r => r.json()).then(list => {
+    sourcesEl.textContent = list.length ? 'Sources: ' + list.map(c => c.name).join(', ') : 'No knowledge sources configured - see config.yaml';
+  }).catch(() => { sourcesEl.textContent = ''; });
+  restore();
+  refreshAuth();
+  input.focus();
+})();
+</script>
+</body>
+</html>

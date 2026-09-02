@@ -1,0 +1,11 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+config.yaml
+.msal_token_cache.json
+.pytest_cache/
+*.egg-info/
+dist/
+build/
